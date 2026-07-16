@@ -191,7 +191,7 @@ async def handle_user_request(message: types.Message, state: FSMContext, bot: Bo
         )
         await state.set_state(FolderCreation.choosing_company)
 
-@router.callback_query(F.data.startswith("ai_company:"))
+@router.callback_query(F.data.startswith("ai_company:") | F.data.startswith("company:"))
 async def ai_company_chosen(callback: types.CallbackQuery, state: FSMContext):
     company = callback.data.split(":")[1]
     user_data = await state.get_data()
@@ -200,14 +200,25 @@ async def ai_company_chosen(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(pending_company=company)
     company_name = "Бластер" if company == "blaster" else "Культ"
     
-    await callback.message.edit_text(
-        f"<b>Подтвердите создание папки:</b>\n\n"
-        f"<b>Компания:</b> {company_name}\n"
-        f"<b>Имя папки:</b> {folder_name}",
-        reply_markup=get_confirmation_keyboard(),
-        parse_mode="HTML"
-    )
-    await state.set_state(FolderCreation.confirm_creation)
+    if folder_name:
+        # Сценарий 1: Имя папки уже известно (пришли из текстового/голосового запроса)
+        await callback.message.edit_text(
+            f"<b>Подтвердите создание папки:</b>\n\n"
+            f"<b>Компания:</b> {company_name}\n"
+            f"<b>Имя папки:</b> {folder_name}",
+            reply_markup=get_confirmation_keyboard(),
+            parse_mode="HTML"
+        )
+        await state.set_state(FolderCreation.confirm_creation)
+    else:
+        # Сценарий 2: Имени папки еще нет (пришли из команды /start)
+        await callback.message.edit_text(
+            f"Выбрана компания: <b>{company_name}</b>.\n\n"
+            f"Введите имя для <b>главной папки</b> ответным сообщением:",
+            parse_mode="HTML"
+        )
+        await state.set_state(FolderCreation.editing_name) # переводим в режим ввода имени
+        
     await callback.answer()
 
 # --- ШАГ ПОДТВЕРЖДЕНИЯ (Кнопки) ---
