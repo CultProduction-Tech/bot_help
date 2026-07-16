@@ -191,8 +191,7 @@ async def handle_user_request(message: types.Message, state: FSMContext, bot: Bo
         )
         await state.set_state(FolderCreation.choosing_company)
 
-# --- ОБРАБОТКА ВЫБОРА КОМПАНИИ (для "both") ---
-@router.callback_query(FolderCreation.choosing_company, F.data.startswith("ai_company:"))
+@router.callback_query(F.data.startswith("ai_company:"))
 async def ai_company_chosen(callback: types.CallbackQuery, state: FSMContext):
     company = callback.data.split(":")[1]
     user_data = await state.get_data()
