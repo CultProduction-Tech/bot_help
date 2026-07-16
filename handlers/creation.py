@@ -7,7 +7,7 @@ from drive_service import get_drive_service, create_drive_folder, create_folders
 import config
 from states import FolderCreation
 from ai_service import analyze_user_intent, transcribe_voice
-
+from aiogram.filters import StateFilter
 router = Router()
 
 CULT_STRUCTURE = {
@@ -102,7 +102,7 @@ async def execute_folder_creation(message: types.Message, company: str, folder_n
 
 # --- ОБРАБОТКА ТЕКСТА И ГОЛОСА ---
 
-@router.message(F.voice | F.text)
+@router.message(StateFilter(None), F.voice | F.text)
 async def handle_user_request(message: types.Message, state: FSMContext, bot: Bot):
     if message.text and message.text.startswith("/"):
         return
