@@ -72,14 +72,14 @@ async def execute_folder_creation(message: types.Message, company: str, folder_n
         # 2. Создаем структуру
         create_folders_recursive(service, structure, main_folder_id)
 
-        project_uuid = await send_webhook(
+        project_uuid, internal_project_link = await send_webhook(
             company=company,
             folder_name=folder_name,
             folder_link=main_folder_link,
             folder_id=main_folder_id
         )
 
-        await send_cup_webhook(
+        cup_project_link = await send_cup_webhook(
             company=company,
             folder_name=folder_name,
             folder_link=main_folder_link,
@@ -87,11 +87,19 @@ async def execute_folder_creation(message: types.Message, company: str, folder_n
             project_id=project_uuid
         )
 
+        internal_system_name = "СнупДок" if company == "blaster" else "Нори"
+
+        links_text = f"• <a href='{main_folder_link}'>Google Диск</a>\n"
+        if cup_project_link:
+            links_text += f"• <a href='{cup_project_link}'>Проект в ЦУП</a>\n"
+        if internal_project_link:
+            links_text += f"• <a href='{internal_project_link}'>Проект в {internal_system_name}</a>\n"
 
         await status_message.edit_text(
-            f"<b>Успешно создано для компании {company.upper()}!</b>\n\n"
-            f"<b>Папка проекта:</b> {folder_name}\n"
-            f"<a href='{main_folder_link}'>Открыть папку на Google Диске</a>",
+            f"<b>Успешно создано для компании {company}:</b>\n\n"
+            f"<b>Папка проекта:</b> {folder_name}\n\n"
+            f"🔗 <b>Ссылки на ресурсы:</b>\n"
+            f"{links_text}",
             parse_mode="HTML",
             disable_web_page_preview=True
         )
