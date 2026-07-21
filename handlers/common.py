@@ -40,11 +40,11 @@ async def cmd_start(message: types.Message, state: FSMContext):
         await state.set_state(FolderCreation.choosing_company)
     else:
         company_name = "Бластер" if access == "blaster" else "Культ"
-        await state.update_data(chosen_company=access)
+        await state.update_data(pending_company=access)
         
         await message.answer(
             f"Привет! Создаем папку для компании **{company_name}**.\n\n"
-            "Введите имя для **главной папки**:",
+            "Введите **название папки** или **ID сделки из AmoCRM**:",
             parse_mode="Markdown"
         )
-        await state.set_state(FolderCreation.entering_name)
+        await state.set_state(FolderCreation.editing_name)

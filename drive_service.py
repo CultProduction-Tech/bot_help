@@ -6,7 +6,7 @@ import aiohttp
 import logging
 import config
 
-async def send_webhook(company: str, folder_name: str, folder_link: str, folder_id: str) -> tuple[str, str]:
+async def send_webhook(company: str, folder_name: str, folder_link: str, folder_id: str, deal_id: str | None = None) -> tuple[str, str]:
     """
     Отправляет POST-запрос на сервис компании и возвращает полученный (projectId, project_link).
     """
@@ -23,6 +23,8 @@ async def send_webhook(company: str, folder_name: str, folder_link: str, folder_
         "folder_id": folder_id,
         "folder_link": folder_link
     }
+    if deal_id:
+        payload["amo_deal_id"] = deal_id
     
     headers = {"Authorization": f"Bearer {token}"} if token else {}
 
@@ -50,7 +52,7 @@ async def send_webhook(company: str, folder_name: str, folder_link: str, folder_
         return "", ""
 
 
-async def send_cup_webhook(company: str, folder_name: str, folder_link: str, folder_id: str, project_id: str) -> str:
+async def send_cup_webhook(company: str, folder_name: str, folder_link: str, folder_id: str, project_id: str, deal_id: str | None = None) -> str:
     """
     Отправляет POST-запрос в систему CUP, включая полученный ранее project_id.
     Возвращает прямую ссылку на созданный проект в ЦУП.
@@ -65,10 +67,12 @@ async def send_cup_webhook(company: str, folder_name: str, folder_link: str, fol
     payload = {
         "company": company,
         "project_name": folder_name,
-        "project_id": project_id,  # UUID из ответа первого сервиса
+        "project_id": project_id,
         "google_folder_id": folder_id,
         "google_folder_link": folder_link
     }
+    if deal_id:
+        payload["amo_deal_id"] = deal_id
     
     headers = {"Authorization": f"Bearer {token}"} if token else {}
 

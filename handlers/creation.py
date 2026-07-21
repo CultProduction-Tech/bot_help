@@ -1,4 +1,5 @@
 import os
+import asyncio
 import logging
 from aiogram import Router, types, F, Bot
 from aiogram.fsm.context import FSMContext
@@ -7,6 +8,7 @@ from drive_service import get_drive_service, create_drive_folder, create_folders
 import config
 from states import FolderCreation
 from ai_service import analyze_user_intent, transcribe_voice
+from amo_service import extract_deal_id, get_deal_name
 from aiogram.filters import StateFilter
 router = Router()
 
@@ -51,10 +53,62 @@ def get_confirmation_keyboard():
     builder.button(text="✅ Подтвердить", callback_data="confirm:yes")
     builder.button(text="✏️ Изменить имя", callback_data="confirm:edit")
     builder.button(text="❌ Отмена", callback_data="confirm:cancel")
-    builder.adjust(1, 2)  # Первая кнопка на всю ширину, две другие в один ряд
+    builder.adjust(1, 2)
     return builder.as_markup()
 
-async def execute_folder_creation(message: types.Message, company: str, folder_name: str):
+
+def format_company_name(company: str) -> str:
+    return "Бластер" if company == "blaster" else "Культ"
+
+
+def format_confirmation_text(company: str, folder_name: str, deal_id: str | None = None) -> str:
+    company_name = format_company_name(company)
+    text = (
+        f"<b>Подтвердите создание папки:</b>\n\n"
+        f"<b>Компания:</b> {company_name}\n"
+    )
+    if deal_id:
+        text += f"<b>Сделка AmoCRM:</b> #{deal_id}\n"
+    text += f"<b>Имя папки:</b> {folder_name}"
+    return text
+
+
+async def resolve_folder_name(user_text: str, allowed: list) -> tuple[str | None, str | None, str | None]:
+    """
+    Определяет имя папки из текста или AmoCRM.
+    Возвращает (folder_name, company, deal_id).
+    """
+    deal_id = extract_deal_id(user_text)
+    intent = await analyze_user_intent(user_text, allowed)
+    company = intent.get("company")
+
+    if deal_id:
+        company_hint = company if company in allowed else None
+        if not company_hint and len(allowed) == 1:
+            company_hint = allowed[0]
+
+        folder_name = await get_deal_name(deal_id, company_hint)
+        if not folder_name:
+            return None, company, deal_id
+        return folder_name, company, deal_id
+
+    return intent.get("folder_name"), company, None
+
+
+async def show_confirmation(message: types.Message, state: FSMContext, company: str, folder_name: str, deal_id: str | None = None):
+    await state.update_data(
+        pending_company=company,
+        pending_folder_name=folder_name,
+        pending_deal_id=deal_id,
+    )
+    await message.answer(
+        format_confirmation_text(company, folder_name, deal_id),
+        reply_markup=get_confirmation_keyboard(),
+        parse_mode="HTML",
+    )
+    await state.set_state(FolderCreation.confirm_creation)
+
+async def execute_folder_creation(message: types.Message, company: str, folder_name: str, deal_id: str | None = None):
     """Непосредственное создание структуры папок."""
     status_message = await message.answer(f"Создаю структуру папок для {company.upper()}...")
     
@@ -62,21 +116,20 @@ async def execute_folder_creation(message: types.Message, company: str, folder_n
     structure = BLASTER_STRUCTURE if company == "blaster" else CULT_STRUCTURE
     
     try:
-        service = get_drive_service(company)
+        service = await asyncio.to_thread(get_drive_service, company)
         
-        # 1. Создаем главную папку
-        main_folder = create_drive_folder(service, folder_name, parent_id)
+        main_folder = await asyncio.to_thread(create_drive_folder, service, folder_name, parent_id)
         main_folder_id = main_folder.get('id')
         main_folder_link = main_folder.get('webViewLink')
         
-        # 2. Создаем структуру
-        create_folders_recursive(service, structure, main_folder_id)
+        await asyncio.to_thread(create_folders_recursive, service, structure, main_folder_id)
 
         project_uuid, internal_project_link = await send_webhook(
             company=company,
             folder_name=folder_name,
             folder_link=main_folder_link,
-            folder_id=main_folder_id
+            folder_id=main_folder_id,
+            deal_id=deal_id,
         )
 
         cup_project_link = await send_cup_webhook(
@@ -84,7 +137,8 @@ async def execute_folder_creation(message: types.Message, company: str, folder_n
             folder_name=folder_name,
             folder_link=main_folder_link,
             folder_id=main_folder_id,
-            project_id=project_uuid
+            project_id=project_uuid,
+            deal_id=deal_id,
         )
 
         internal_system_name = "СнупДок" if company == "blaster" else "Нори"
@@ -95,11 +149,24 @@ async def execute_folder_creation(message: types.Message, company: str, folder_n
         if internal_project_link:
             links_text += f"• <a href='{internal_project_link}'>Проект в {internal_system_name}</a>\n"
 
+        warnings = []
+        webhook_url = config.WEBHOOK_URL_CULT if company == "cult" else config.WEBHOOK_URL_BLASTER
+        if not project_uuid and webhook_url:
+            warnings.append(f"не удалось зарегистрировать проект в {internal_system_name}")
+        if not cup_project_link and config.WEBHOOK_URL_CUP:
+            warnings.append("не удалось зарегистрировать проект в ЦУП")
+
+        warning_text = ""
+        if warnings:
+            warning_text = f"\n\n⚠️ <i>Папки созданы, но: {', '.join(warnings)}.</i>"
+
+        deal_text = f"\n<b>Сделка AmoCRM:</b> #{deal_id}" if deal_id else ""
+
         await status_message.edit_text(
             f"<b>Успешно создано для компании {company}:</b>\n\n"
-            f"<b>Папка проекта:</b> {folder_name}\n\n"
+            f"<b>Папка проекта:</b> {folder_name}{deal_text}\n\n"
             f"🔗 <b>Ссылки на ресурсы:</b>\n"
-            f"{links_text}",
+            f"{links_text}{warning_text}",
             parse_mode="HTML",
             disable_web_page_preview=True
         )
@@ -115,11 +182,6 @@ async def handle_user_request(message: types.Message, state: FSMContext, bot: Bo
     if message.text and message.text.startswith("/"):
         return
 
-    # Защита: если мы уже находимся в каком-то состоянии FSM, игнорируем новые запросы
-    current_state = await state.get_state()
-    if current_state in [FolderCreation.confirm_creation, FolderCreation.editing_name]:
-        return
-
     user_id = message.from_user.id
     allowed = get_allowed_companies_for_user(user_id)
     
@@ -127,7 +189,6 @@ async def handle_user_request(message: types.Message, state: FSMContext, bot: Bo
         await message.answer("🚫 У вас нет доступа к этому боту.")
         return
 
-    # 1. Извлекаем текст
     if message.voice:
         voice_file = await bot.get_file(message.voice.file_id)
         file_path = f"voice_{message.voice.file_id}.ogg"
@@ -144,55 +205,42 @@ async def handle_user_request(message: types.Message, state: FSMContext, bot: Bo
     else:
         user_text = message.text.strip()
 
-    # 2. ИИ-анализ намерения
-    intent = await analyze_user_intent(user_text, allowed)
-    folder_name = intent.get("folder_name")
-    company = intent.get("company")
+    deal_id_hint = extract_deal_id(user_text)
+    if deal_id_hint:
+        await message.answer(f"🔍 Ищу сделку #{deal_id_hint} в AmoCRM...")
 
-    if not folder_name:
-        await message.answer("🤖 Я понял, что ты хочешь создать папку, но не смог выделить её имя из контекста. Напиши или скажи ещё раз.")
+    folder_name, company, deal_id = await resolve_folder_name(user_text, allowed)
+
+    if deal_id and not folder_name:
+        await message.answer(
+            f"❌ Не удалось найти сделку с ID <b>{deal_id}</b> в AmoCRM.\n"
+            "Проверь ID или настройки AmoCRM в .env.",
+            parse_mode="HTML",
+        )
         return
 
-    # 3. Подготовка подтверждения
+    if not folder_name:
+        await message.answer(
+            "🤖 Я понял, что ты хочешь создать папку, но не смог выделить её имя из контекста. "
+            "Напиши название, ID сделки AmoCRM или скажи голосом."
+        )
+        return
+
     if company in allowed:
-        # Если ИИ определил и компанию, и имя папки
-        await state.update_data(pending_company=company, pending_folder_name=folder_name)
-        company_name = "Бластер" if company == "blaster" else "Культ"
-        
-        await message.answer(
-            f"<b>Подтвердите создание папки:</b>\n\n"
-            f"<b>Компания:</b> {company_name}\n"
-            f"<b>Имя папки:</b> {folder_name}",
-            reply_markup=get_confirmation_keyboard(),
-            parse_mode="HTML"
-        )
-        await state.set_state(FolderCreation.confirm_creation)
-        
+        await show_confirmation(message, state, company, folder_name, deal_id)
     elif len(allowed) == 1:
-        # Если компания неизвестна, но у юзера всего 1 доступная компания
-        await state.update_data(pending_company=allowed[0], pending_folder_name=folder_name)
-        company_name = "Бластер" if allowed[0] == "blaster" else "Культ"
-        
-        await message.answer(
-            f"<b>Подтвердите создание папки:</b>\n\n"
-            f"<b>Компания:</b> {company_name}\n"
-            f"<b>Имя папки:</b> {folder_name}",
-            reply_markup=get_confirmation_keyboard(),
-            parse_mode="HTML"
-        )
-        await state.set_state(FolderCreation.confirm_creation)
-        
+        await show_confirmation(message, state, allowed[0], folder_name, deal_id)
     else:
-        # Если компания неизвестна и юзер — админ в обеих (сначала даем выбрать компанию)
-        await state.update_data(pending_folder_name=folder_name)
+        await state.update_data(pending_folder_name=folder_name, pending_deal_id=deal_id)
         
         builder = InlineKeyboardBuilder()
         builder.button(text="Бластер", callback_data="ai_company:blaster")
         builder.button(text="Культ", callback_data="ai_company:cult")
         builder.adjust(2)
         
+        deal_info = f" (сделка #{deal_id})" if deal_id else ""
         await message.answer(
-            f"Я понял, что нужно создать папку <b>\"{folder_name}\"</b>.\n"
+            f"Я понял, что нужно создать папку <b>\"{folder_name}\"</b>{deal_info}.\n"
             f"На каком Google Диске её разместить?",
             reply_markup=builder.as_markup(),
             parse_mode="HTML"
@@ -204,28 +252,25 @@ async def ai_company_chosen(callback: types.CallbackQuery, state: FSMContext):
     company = callback.data.split(":")[1]
     user_data = await state.get_data()
     folder_name = user_data.get("pending_folder_name")
+    deal_id = user_data.get("pending_deal_id")
     
     await state.update_data(pending_company=company)
-    company_name = "Бластер" if company == "blaster" else "Культ"
+    company_name = format_company_name(company)
     
     if folder_name:
-        # Сценарий 1: Имя папки уже известно (пришли из текстового/голосового запроса)
         await callback.message.edit_text(
-            f"<b>Подтвердите создание папки:</b>\n\n"
-            f"<b>Компания:</b> {company_name}\n"
-            f"<b>Имя папки:</b> {folder_name}",
+            format_confirmation_text(company, folder_name, deal_id),
             reply_markup=get_confirmation_keyboard(),
             parse_mode="HTML"
         )
         await state.set_state(FolderCreation.confirm_creation)
     else:
-        # Сценарий 2: Имени папки еще нет (пришли из команды /start)
         await callback.message.edit_text(
             f"Выбрана компания: <b>{company_name}</b>.\n\n"
-            f"Введите имя для <b>главной папки</b> ответным сообщением:",
+            f"Введите <b>название папки</b> или <b>ID сделки AmoCRM</b> ответным сообщением:",
             parse_mode="HTML"
         )
-        await state.set_state(FolderCreation.editing_name) # переводим в режим ввода имени
+        await state.set_state(FolderCreation.editing_name)
         
     await callback.answer()
 
@@ -239,17 +284,16 @@ async def process_confirmation(callback: types.CallbackQuery, state: FSMContext)
     user_data = await state.get_data()
     company = user_data.get("pending_company")
     folder_name = user_data.get("pending_folder_name")
+    deal_id = user_data.get("pending_deal_id")
     
     if action == "yes":
-        # 2. Удаляем сообщение с кнопками, чтобы пользователь не нажал их повторно
         await callback.message.delete()
         await state.clear()
-        # 3. Запускаем долгий процесс генерации папок и отправки вебхука
-        await execute_folder_creation(callback.message, company, folder_name)
+        await execute_folder_creation(callback.message, company, folder_name, deal_id)
         
     elif action == "edit":
         await callback.message.edit_text(
-            "✏️ Введите новое название для папки ответным сообщением:",
+            "✏️ Введите новое название или ID сделки AmoCRM ответным сообщением:",
             parse_mode="Markdown"
         )
         await state.set_state(FolderCreation.editing_name)
@@ -260,18 +304,45 @@ async def process_confirmation(callback: types.CallbackQuery, state: FSMContext)
 # --- ОБРАБОТКА ИЗМЕНЕНИЯ ИМЕНИ (Текст) ---
 @router.message(FolderCreation.editing_name)
 async def process_new_name(message: types.Message, state: FSMContext):
-    new_name = message.text.strip()
+    if not message.text:
+        await message.answer("❌ Отправь текстовое сообщение с названием или ID сделки.")
+        return
+
+    user_text = message.text.strip()
     user_data = await state.get_data()
     company = user_data.get("pending_company")
-    
-    await state.update_data(pending_folder_name=new_name)
-    company_name = "Бластер" if company == "blaster" else "Культ"
-    
-    # Повторно показываем карточку с новым именем папки
+
+    if not company:
+        await message.answer("❌ Компания не выбрана. Начните с команды /start.")
+        await state.clear()
+        return
+
+    deal_id_hint = extract_deal_id(user_text)
+    if deal_id_hint:
+        await message.answer(f"🔍 Ищу сделку #{deal_id_hint} в AmoCRM...")
+        folder_name = await get_deal_name(deal_id_hint, company)
+        deal_id = deal_id_hint
+        if not folder_name:
+            await message.answer(
+                f"❌ Не удалось найти сделку с ID <b>{deal_id_hint}</b> в AmoCRM.",
+                parse_mode="HTML",
+            )
+            return
+    else:
+        folder_name = user_text
+        deal_id = None
+
+    await state.update_data(pending_folder_name=folder_name, pending_deal_id=deal_id)
+    company_name = format_company_name(company)
+
+    title = "Имя изменено! Подтвердите создание:" if user_data.get("pending_folder_name") else "Подтвердите создание:"
+    text = f"<b>{title}</b>\n\n<b>Компания:</b> {company_name}\n"
+    if deal_id:
+        text += f"<b>Сделка AmoCRM:</b> #{deal_id}\n"
+    text += f"<b>Имя папки:</b> {folder_name}"
+
     await message.answer(
-        f"<b>Имя изменено! Подтвердите создание:</b>\n\n"
-        f"<b>Компания:</b> {company_name}\n"
-        f"<b>Имя папки:</b> {new_name}",
+        text,
         reply_markup=get_confirmation_keyboard(),
         parse_mode="HTML"
     )
