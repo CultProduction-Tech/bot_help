@@ -69,10 +69,9 @@ async def send_cup_webhook(company: str, folder_name: str, folder_link: str, fol
         "project_name": folder_name,
         "project_id": project_id,
         "google_folder_id": folder_id,
-        "google_folder_link": folder_link
+        "google_folder_link": folder_link,
+        "amo_deal_id": int(deal_id) if deal_id and deal_id.isdigit() else deal_id,
     }
-    if deal_id:
-        payload["amo_deal_id"] = deal_id
     
     headers = {"Authorization": f"Bearer {token}"} if token else {}
 
