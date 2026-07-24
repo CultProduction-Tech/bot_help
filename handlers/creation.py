@@ -179,6 +179,7 @@ async def execute_folder_creation(
                     chat_id,
                     bot,
                     f"❌ Не удалось создать сделку в AmoCRM.\n\n{amo_error or 'Неизвестная ошибка'}",
+                    parse_mode="HTML",
                 )
                 return
 

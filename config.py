@@ -3,6 +3,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _clean_token(raw: str | None) -> str:
+    if not raw:
+        return ""
+    return raw.strip().strip('"').strip("'").replace("\n", "").replace("\r", "")
+
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # Роли пользователей
@@ -26,22 +33,28 @@ WEBHOOK_URL_CUP = os.getenv("WEBHOOK_URL_CUP")
 TELEGRAM_CUP_SECRET = os.getenv("TELEGRAM_CUP_SECRET")
 
 # AmoCRM
-AMOCRM_BASE_URL = os.getenv("AMOCRM_BASE_URL", "").rstrip("/")
-AMOCRM_API_DOMAIN = os.getenv("AMOCRM_API_DOMAIN")
-AMOCRM_ACCESS_TOKEN = os.getenv("AMOCRM_ACCESS_TOKEN")
+AMOCRM_BASE_URL = os.getenv("AMOCRM_BASE_URL", "").strip().rstrip("/")
+AMOCRM_API_DOMAIN = os.getenv("AMOCRM_API_DOMAIN", "").strip()
+AMOCRM_ACCESS_TOKEN = _clean_token(os.getenv("AMOCRM_ACCESS_TOKEN"))
 
 # Поддомен (fallback, если BASE_URL не задан)
-AMOCRM_SUBDOMAIN = os.getenv("AMOCRM_SUBDOMAIN")
+AMOCRM_SUBDOMAIN = os.getenv("AMOCRM_SUBDOMAIN", "").strip()
 AMOCRM_DOMAIN = os.getenv("AMOCRM_DOMAIN", "amocrm.ru")
 
-AMOCRM_SUBDOMAIN_BLASTER = os.getenv("AMOCRM_SUBDOMAIN_BLASTER")
-AMOCRM_ACCESS_TOKEN_BLASTER = os.getenv("AMOCRM_ACCESS_TOKEN_BLASTER")
-AMOCRM_SUBDOMAIN_CULT = os.getenv("AMOCRM_SUBDOMAIN_CULT")
-AMOCRM_ACCESS_TOKEN_CULT = os.getenv("AMOCRM_ACCESS_TOKEN_CULT")
+AMOCRM_SUBDOMAIN_BLASTER = os.getenv("AMOCRM_SUBDOMAIN_BLASTER", "").strip()
+AMOCRM_ACCESS_TOKEN_BLASTER = _clean_token(os.getenv("AMOCRM_ACCESS_TOKEN_BLASTER"))
+AMOCRM_SUBDOMAIN_CULT = os.getenv("AMOCRM_SUBDOMAIN_CULT", "").strip()
+AMOCRM_ACCESS_TOKEN_CULT = _clean_token(os.getenv("AMOCRM_ACCESS_TOKEN_CULT"))
 
 # ID воронок — для проверки, что сделка относится к нужной компании
-AMOCRM_PIPELINE_ID_CULT = os.getenv("AMOCRM_PIPELINE_ID_CULT")
-AMOCRM_PIPELINE_ID_BLASTER = os.getenv("AMOCRM_PIPELINE_ID_BLASTER") or os.getenv("AMOCRM_PIPELINE_ID_BLUSTER")
+AMOCRM_PIPELINE_ID_CULT = os.getenv("AMOCRM_PIPELINE_ID_CULT", "").strip()
+AMOCRM_PIPELINE_ID_BLASTER = (
+    os.getenv("AMOCRM_PIPELINE_ID_BLASTER") or os.getenv("AMOCRM_PIPELINE_ID_BLUSTER") or ""
+).strip()
+
+# Опционально: ID первого этапа воронки (если API этапов недоступен)
+AMOCRM_STATUS_ID_CULT = os.getenv("AMOCRM_STATUS_ID_CULT", "").strip()
+AMOCRM_STATUS_ID_BLASTER = os.getenv("AMOCRM_STATUS_ID_BLASTER", "").strip()
 
 # Проверка на наличие критически важных переменных
 if not BOT_TOKEN:
