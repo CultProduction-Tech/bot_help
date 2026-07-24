@@ -239,14 +239,12 @@ async def execute_folder_creation(
             warnings.append("не удалось зарегистрировать проект в СУП")
 
         warning_text = f"\n\n⚠️ <i>Проект частично создан, но: {', '.join(warnings)}.</i>" if warnings else ""
-        deal_text = f"\n<b>Сделка AmoCRM:</b> #{deal_id}" if deal_id else ""
 
         await _update_status(
             status_message,
             chat_id,
             bot,
-            f"<b>✅ Проект создан — {format_company_name(company)}</b>\n\n"
-            f"<b>Имя проекта:</b> {folder_name}{deal_text}\n\n"
+            f"<b>Проект для компании {format_company_name(company)} создан — {folder_name}</b>\n\n"
             f"🔗 <b>Ссылки:</b>\n{links_text}{warning_text}",
             parse_mode="HTML",
             disable_web_page_preview=True,
