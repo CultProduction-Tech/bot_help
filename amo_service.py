@@ -70,6 +70,110 @@ def _company_label(company: str) -> str:
     return "Бластер" if company == "blaster" else "Культ"
 
 
+def get_deal_link(deal_id: str, company: str | None = None) -> str | None:
+    base_url = _get_amo_base_url(company)
+    if not base_url:
+        return None
+    return f"{base_url}/leads/detail/{deal_id}"
+
+
+_pipeline_status_cache: dict[str, int] = {}
+
+
+async def _get_first_status_id(company: str) -> int | None:
+    pipeline_id = _get_expected_pipeline_id(company)
+    if not pipeline_id:
+        logging.error(f"Не задан ID воронки AmoCRM для {_company_label(company)}")
+        return None
+
+    cache_key = f"{company}:{pipeline_id}"
+    if cache_key in _pipeline_status_cache:
+        return _pipeline_status_cache[cache_key]
+
+    base_url = _get_amo_base_url(company)
+    token = _get_amo_token(company)
+    if not base_url or not token:
+        return None
+
+    url = f"{base_url}/api/v4/leads/pipelines/{pipeline_id}"
+    headers = {"Authorization": f"Bearer {token}"}
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, timeout=15) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    logging.error(
+                        f"Не удалось получить воронку {pipeline_id}: {response.status} {error_text}"
+                    )
+                    return None
+
+                data = await response.json()
+                statuses = data.get("_embedded", {}).get("statuses", [])
+                if not statuses:
+                    logging.error(f"У воронки {pipeline_id} нет этапов")
+                    return None
+
+                first_status = min(statuses, key=lambda s: s.get("sort", 0))
+                status_id = first_status["id"]
+                _pipeline_status_cache[cache_key] = status_id
+                return status_id
+    except Exception as e:
+        logging.error(f"Ошибка получения этапов воронки {pipeline_id}: {e}")
+        return None
+
+
+async def create_deal(name: str, company: str) -> str | None:
+    """Создаёт сделку в AmoCRM и возвращает её ID."""
+    base_url = _get_amo_base_url(company)
+    token = _get_amo_token(company)
+    pipeline_id = _get_expected_pipeline_id(company)
+
+    if not base_url or not token:
+        logging.error("AmoCRM не настроен для создания сделки")
+        return None
+    if not pipeline_id:
+        logging.error(f"Не задан AMOCRM_PIPELINE_ID для {_company_label(company)}")
+        return None
+
+    status_id = await _get_first_status_id(company)
+    if not status_id:
+        return None
+
+    url = f"{base_url}/api/v4/leads"
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = [{
+        "name": name,
+        "pipeline_id": int(pipeline_id),
+        "status_id": status_id,
+    }]
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, headers=headers, timeout=15) as response:
+                if response.status not in (200, 201):
+                    error_text = await response.text()
+                    logging.error(
+                        f"AmoCRM не создал сделку: {response.status} {error_text}"
+                    )
+                    return None
+
+                data = await response.json()
+                leads = data.get("_embedded", {}).get("leads", [])
+                if not leads:
+                    logging.error("AmoCRM вернул пустой список сделок после создания")
+                    return None
+
+                deal_id = str(leads[0]["id"])
+                logging.info(
+                    f"Создана сделка #{deal_id} «{name}» в воронке {_company_label(company)}"
+                )
+                return deal_id
+    except Exception as e:
+        logging.error(f"Ошибка создания сделки в AmoCRM: {e}")
+        return None
+
+
 async def get_deal_name(deal_id: str, company: str | None = None) -> str | None:
     """Получает название сделки из AmoCRM по её ID."""
     base_url = _get_amo_base_url(company)
