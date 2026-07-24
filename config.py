@@ -27,6 +27,7 @@ TELEGRAM_CUP_SECRET = os.getenv("TELEGRAM_CUP_SECRET")
 
 # AmoCRM
 AMOCRM_BASE_URL = os.getenv("AMOCRM_BASE_URL", "").rstrip("/")
+AMOCRM_API_DOMAIN = os.getenv("AMOCRM_API_DOMAIN")
 AMOCRM_ACCESS_TOKEN = os.getenv("AMOCRM_ACCESS_TOKEN")
 
 # Поддомен (fallback, если BASE_URL не задан)

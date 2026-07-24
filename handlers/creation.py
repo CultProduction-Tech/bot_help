@@ -4,13 +4,14 @@ import logging
 from aiogram import Router, types, F, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.exceptions import TelegramBadRequest
 from drive_service import get_drive_service, create_drive_folder, create_folders_recursive, send_webhook, send_cup_webhook
 import config
 from states import FolderCreation
 from ai_service import analyze_user_intent, transcribe_voice
 from amo_service import extract_deal_id, get_deal_name, create_deal, get_deal_link
 from aiogram.filters import StateFilter
-from keyboards import get_main_keyboard
+from keyboards import get_main_keyboard, get_company_keyboard, get_input_keyboard
 
 router = Router()
 
@@ -62,6 +63,14 @@ def get_confirmation_keyboard():
 
 def format_company_name(company: str) -> str:
     return "Бластер" if company == "blaster" else "Культ"
+
+
+async def _update_status(status_message: types.Message, chat_id: int, bot: Bot, text: str, **kwargs):
+    try:
+        await status_message.edit_text(text, **kwargs)
+        return status_message
+    except TelegramBadRequest:
+        return await bot.send_message(chat_id, text, **kwargs)
 
 
 def format_confirmation_text(
@@ -129,32 +138,44 @@ async def show_confirmation(
 
 
 async def execute_folder_creation(
-    message: types.Message,
+    bot: Bot,
+    chat_id: int,
+    status_message: types.Message,
     company: str,
     folder_name: str,
     deal_id: str | None = None,
     create_amo: bool = False,
 ):
-    status_message = await message.answer(
+    status_message = await _update_status(
+        status_message,
+        chat_id,
+        bot,
         f"⏳ Запускаю создание проекта для {format_company_name(company)}...",
         reply_markup=get_main_keyboard(),
     )
 
-    if create_amo and not deal_id:
-        await status_message.edit_text("⏳ Создаю сделку в AmoCRM...")
-        deal_id = await create_deal(folder_name, company)
-        if not deal_id:
-            await status_message.edit_text(
-                "❌ Не удалось создать сделку в AmoCRM. Проверь токен и ID воронки в .env."
-            )
-            return
-
-    await status_message.edit_text("⏳ Создаю структуру папок на Google Drive...")
-
-    parent_id = config.PARENT_FOLDER_BLASTER if company == "blaster" else config.PARENT_FOLDER_CULT
-    structure = BLASTER_STRUCTURE if company == "blaster" else CULT_STRUCTURE
-
     try:
+        if create_amo and not deal_id:
+            status_message = await _update_status(
+                status_message, chat_id, bot, "⏳ Создаю сделку в AmoCRM..."
+            )
+            deal_id, amo_error = await create_deal(folder_name, company)
+            if amo_error or not deal_id:
+                await _update_status(
+                    status_message,
+                    chat_id,
+                    bot,
+                    f"❌ Не удалось создать сделку в AmoCRM.\n{amo_error or 'Неизвестная ошибка'}",
+                )
+                return
+
+        status_message = await _update_status(
+            status_message, chat_id, bot, "⏳ Создаю структуру папок на Google Drive..."
+        )
+
+        parent_id = config.PARENT_FOLDER_BLASTER if company == "blaster" else config.PARENT_FOLDER_CULT
+        structure = BLASTER_STRUCTURE if company == "blaster" else CULT_STRUCTURE
+
         service = await asyncio.to_thread(get_drive_service, company)
 
         main_folder = await asyncio.to_thread(create_drive_folder, service, folder_name, parent_id)
@@ -163,7 +184,9 @@ async def execute_folder_creation(
 
         await asyncio.to_thread(create_folders_recursive, service, structure, main_folder_id)
 
-        await status_message.edit_text("⏳ Регистрирую проект в системах...")
+        status_message = await _update_status(
+            status_message, chat_id, bot, "⏳ Регистрирую проект в системах..."
+        )
 
         project_uuid, internal_project_link = await send_webhook(
             company=company,
@@ -204,7 +227,10 @@ async def execute_folder_creation(
         warning_text = f"\n\n⚠️ <i>Проект частично создан, но: {', '.join(warnings)}.</i>" if warnings else ""
         deal_text = f"\n<b>Сделка AmoCRM:</b> #{deal_id}" if deal_id else ""
 
-        await status_message.edit_text(
+        await _update_status(
+            status_message,
+            chat_id,
+            bot,
             f"<b>✅ Проект создан — {format_company_name(company)}</b>\n\n"
             f"<b>Имя проекта:</b> {folder_name}{deal_text}\n\n"
             f"🔗 <b>Ссылки:</b>\n{links_text}{warning_text}",
@@ -214,7 +240,12 @@ async def execute_folder_creation(
 
     except Exception as e:
         logging.error(f"Ошибка создания папок или отправки вебхука: {e}")
-        await status_message.edit_text("❌ Произошла ошибка при создании. Проверьте логи.")
+        await _update_status(
+            status_message,
+            chat_id,
+            bot,
+            "❌ Произошла ошибка при создании. Проверьте логи.",
+        )
 
 
 async def _prompt_after_company(callback: types.CallbackQuery, state: FSMContext, company: str):
@@ -226,11 +257,18 @@ async def _prompt_after_company(callback: types.CallbackQuery, state: FSMContext
 
     if folder_name:
         create_amo = mode == "from_scratch" and not deal_id
-        await callback.message.edit_text(
-            format_confirmation_text(company, folder_name, deal_id, create_amo),
-            reply_markup=get_confirmation_keyboard(),
-            parse_mode="HTML",
-        )
+        try:
+            await callback.message.edit_text(
+                format_confirmation_text(company, folder_name, deal_id, create_amo),
+                reply_markup=get_confirmation_keyboard(),
+                parse_mode="HTML",
+            )
+        except TelegramBadRequest:
+            await callback.message.answer(
+                format_confirmation_text(company, folder_name, deal_id, create_amo),
+                reply_markup=get_confirmation_keyboard(),
+                parse_mode="HTML",
+            )
         await state.update_data(pending_company=company, pending_create_amo=create_amo)
         await state.set_state(FolderCreation.confirm_creation)
         return
@@ -243,8 +281,7 @@ async def _prompt_after_company(callback: types.CallbackQuery, state: FSMContext
     elif mode == "from_scratch":
         text = (
             f"Компания: <b>{company_name}</b>\n\n"
-            "Отправь <b>название проекта</b>.\n"
-            "Бот создаст сделку в AmoCRM и дальше всё по цепочке."
+            "Отправь <b>название проекта</b>:"
         )
     else:
         text = (
@@ -252,7 +289,11 @@ async def _prompt_after_company(callback: types.CallbackQuery, state: FSMContext
             "Отправь <b>ID сделки Amo</b> или <b>название проекта</b>:"
         )
 
-    await callback.message.edit_text(text, parse_mode="HTML")
+    try:
+        await callback.message.edit_text(text, parse_mode="HTML")
+    except TelegramBadRequest:
+        await callback.message.answer(text, parse_mode="HTML")
+    await callback.message.answer("Можно вернуться назад или отменить:", reply_markup=get_input_keyboard())
     await state.update_data(pending_company=company)
     await state.set_state(FolderCreation.editing_name)
 
@@ -325,7 +366,9 @@ async def handle_user_request(message: types.Message, state: FSMContext, bot: Bo
         builder = InlineKeyboardBuilder()
         builder.button(text="Бластер", callback_data="ai_company:blaster")
         builder.button(text="Культ", callback_data="ai_company:cult")
-        builder.adjust(2)
+        builder.button(text="◀️ Назад", callback_data="nav:back")
+        builder.button(text="❌ Отмена", callback_data="nav:cancel")
+        builder.adjust(2, 2)
 
         scenario = "с нуля (новая сделка в Amo)" if create_amo else f"по сделке #{deal_id}"
         await message.answer(
@@ -357,15 +400,26 @@ async def process_confirmation(callback: types.CallbackQuery, state: FSMContext)
     create_amo = user_data.get("pending_create_amo", False)
 
     if action == "yes":
-        await callback.message.delete()
         await state.clear()
+        try:
+            await callback.message.edit_text("⏳ Запускаю создание проекта...")
+            status_message = callback.message
+        except TelegramBadRequest:
+            status_message = await callback.message.answer("⏳ Запускаю создание проекта...")
         await execute_folder_creation(
-            callback.message, company, folder_name, deal_id, create_amo
+            callback.bot,
+            callback.message.chat.id,
+            status_message,
+            company,
+            folder_name,
+            deal_id,
+            create_amo,
         )
     elif action == "edit":
         await callback.message.edit_text(
             "✏️ Отправь новое название или ID сделки Amo:",
         )
+        await callback.message.answer("Можно вернуться назад или отменить:", reply_markup=get_input_keyboard())
         await state.set_state(FolderCreation.editing_name)
     elif action == "cancel":
         await callback.message.edit_text("❌ Создание отменено.")

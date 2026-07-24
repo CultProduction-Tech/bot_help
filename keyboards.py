@@ -1,9 +1,10 @@
-from aiogram.types import ReplyKeyboardMarkup
-from aiogram.utils.keyboard import ReplyKeyboardBuilder
+from aiogram.types import InlineKeyboardMarkup, ReplyKeyboardMarkup
+from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 BTN_BY_AMO_ID = "📋 По ID сделки AmoCRM"
 BTN_FROM_SCRATCH = "📋 Создать с нуля"
 BTN_HELP = "❓ Помощь"
+BTN_CANCEL = "❌ Отмена"
 
 
 def get_main_keyboard() -> ReplyKeyboardMarkup:
@@ -11,8 +12,27 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
     builder.button(text=BTN_BY_AMO_ID)
     builder.button(text=BTN_FROM_SCRATCH)
     builder.button(text=BTN_HELP)
-    builder.adjust(2, 1)
+    builder.button(text=BTN_CANCEL)
+    builder.adjust(2, 2)
     return builder.as_markup(resize_keyboard=True, is_persistent=True)
+
+
+def get_company_keyboard(prefix: str = "company") -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Бластер", callback_data=f"{prefix}:blaster")
+    builder.button(text="Культ", callback_data=f"{prefix}:cult")
+    builder.button(text="◀️ Назад", callback_data="nav:back")
+    builder.button(text="❌ Отмена", callback_data="nav:cancel")
+    builder.adjust(2, 2)
+    return builder.as_markup()
+
+
+def get_input_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="◀️ Назад", callback_data="nav:back")
+    builder.button(text="❌ Отмена", callback_data="nav:cancel")
+    builder.adjust(2)
+    return builder.as_markup()
 
 
 def get_help_text(companies: list[str]) -> str:
@@ -35,6 +55,7 @@ def get_help_text(companies: list[str]) -> str:
         "<b>Также можно:</b>\n"
         "• отправить голосовое сообщение\n"
         "• нажать кнопки внизу для выбора сценария\n"
-        "• /start — начать заново\n\n"
+        "• /start — начать заново\n"
+        "• ❌ Отмена — отменить текущее действие\n\n"
         "Перед созданием бот всегда покажет карточку подтверждения."
     )
