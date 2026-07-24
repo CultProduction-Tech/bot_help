@@ -5,6 +5,7 @@ from aiogram import Router, types, F, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest
+from pydantic import ValidationError
 from drive_service import get_drive_service, create_drive_folder, create_folders_recursive, send_webhook, send_cup_webhook
 import config
 from states import FolderCreation
@@ -66,11 +67,16 @@ def format_company_name(company: str) -> str:
 
 
 async def _update_status(status_message: types.Message, chat_id: int, bot: Bot, text: str, **kwargs):
+    edit_kwargs = {k: v for k, v in kwargs.items() if k != "reply_markup"}
     try:
-        await status_message.edit_text(text, **kwargs)
+        await status_message.edit_text(text, **edit_kwargs)
         return status_message
-    except TelegramBadRequest:
-        return await bot.send_message(chat_id, text, **kwargs)
+    except (TelegramBadRequest, ValidationError) as e:
+        logging.warning(f"Не удалось отредактировать сообщение, отправляю новое: {e}")
+        return await bot.send_message(chat_id, text, **edit_kwargs)
+    except Exception as e:
+        logging.error(f"Ошибка обновления статуса: {e}")
+        return await bot.send_message(chat_id, text, **edit_kwargs)
 
 
 def format_confirmation_text(
@@ -151,7 +157,6 @@ async def execute_folder_creation(
         chat_id,
         bot,
         f"⏳ Запускаю создание проекта для {format_company_name(company)}...",
-        reply_markup=get_main_keyboard(),
     )
 
     try:
@@ -159,13 +164,20 @@ async def execute_folder_creation(
             status_message = await _update_status(
                 status_message, chat_id, bot, "⏳ Создаю сделку в AmoCRM..."
             )
-            deal_id, amo_error = await create_deal(folder_name, company)
+            try:
+                deal_id, amo_error = await asyncio.wait_for(
+                    create_deal(folder_name, company),
+                    timeout=25,
+                )
+            except asyncio.TimeoutError:
+                deal_id, amo_error = None, "Превышено время ожидания AmoCRM (25 сек)"
+
             if amo_error or not deal_id:
                 await _update_status(
                     status_message,
                     chat_id,
                     bot,
-                    f"❌ Не удалось создать сделку в AmoCRM.\n{amo_error or 'Неизвестная ошибка'}",
+                    f"❌ Не удалось создать сделку в AmoCRM.\n\n{amo_error or 'Неизвестная ошибка'}",
                 )
                 return
 

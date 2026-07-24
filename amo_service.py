@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import logging
 import re
@@ -13,6 +14,8 @@ DEAL_ID_PATTERN = re.compile(
     r"(?:создай|сделай|папк[ау])[^\d]*(\d+)",
     re.IGNORECASE,
 )
+
+AMO_TIMEOUT = aiohttp.ClientTimeout(total=20, connect=10)
 
 
 def extract_deal_id(text: str) -> str | None:
@@ -31,30 +34,56 @@ def extract_deal_id(text: str) -> str | None:
     return None
 
 
-def _get_amo_base_url(company: str | None = None) -> str | None:
+def _decode_jwt_payload(token: str) -> dict:
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload))
+    except Exception:
+        return {}
+
+
+def _get_api_domain_from_token(token: str | None) -> str | None:
+    if not token:
+        return None
+    return _decode_jwt_payload(token).get("api_domain")
+
+
+def _get_user_id_from_token(token: str | None) -> int | None:
+    if not token:
+        return None
+    sub = _decode_jwt_payload(token).get("sub")
+    try:
+        return int(sub) if sub else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _get_amo_api_url(company: str | None = None) -> str | None:
+    """URL для API-запросов (из api_domain токена или env)."""
     if config.AMOCRM_API_DOMAIN:
         domain = config.AMOCRM_API_DOMAIN.strip().rstrip("/")
         if domain.startswith("http"):
             return domain
         return f"https://{domain}"
 
-    if company == "blaster":
-        subdomain = config.AMOCRM_SUBDOMAIN_BLASTER or config.AMOCRM_SUBDOMAIN
-        if subdomain:
-            return f"https://{subdomain}.{config.AMOCRM_DOMAIN}".rstrip("/")
-        return config.AMOCRM_BASE_URL or None
-
-    if company == "cult":
-        subdomain = config.AMOCRM_SUBDOMAIN_CULT or config.AMOCRM_SUBDOMAIN
-        if subdomain:
-            return f"https://{subdomain}.{config.AMOCRM_DOMAIN}".rstrip("/")
-        return config.AMOCRM_BASE_URL or None
+    token = _get_amo_token(company)
+    api_domain = _get_api_domain_from_token(token)
+    if api_domain:
+        return f"https://{api_domain}"
 
     if config.AMOCRM_BASE_URL:
-        return config.AMOCRM_BASE_URL
+        return config.AMOCRM_BASE_URL.rstrip("/")
 
-    if config.AMOCRM_SUBDOMAIN:
-        return f"https://{config.AMOCRM_SUBDOMAIN}.{config.AMOCRM_DOMAIN}".rstrip("/")
+    if company == "blaster":
+        subdomain = config.AMOCRM_SUBDOMAIN_BLASTER or config.AMOCRM_SUBDOMAIN
+    elif company == "cult":
+        subdomain = config.AMOCRM_SUBDOMAIN_CULT or config.AMOCRM_SUBDOMAIN
+    else:
+        subdomain = config.AMOCRM_SUBDOMAIN
+
+    if subdomain:
+        return f"https://{subdomain}.{config.AMOCRM_DOMAIN}".rstrip("/")
 
     return None
 
@@ -99,8 +128,41 @@ def _parse_created_leads(data: Any) -> list[dict]:
     return []
 
 
+def _parse_amo_error(response_text: str, status: int) -> str:
+    try:
+        data = json.loads(response_text)
+    except json.JSONDecodeError:
+        return f"AmoCRM вернул ошибку {status}"
+
+    if isinstance(data, dict):
+        detail = data.get("detail") or data.get("title")
+        if detail:
+            return f"AmoCRM: {detail}"
+
+        validation_errors = data.get("validation-errors")
+        if validation_errors:
+            parts = []
+            for block in validation_errors:
+                for err in block.get("errors", []):
+                    path = err.get("path", "")
+                    msg = err.get("detail") or err.get("code", "")
+                    if path or msg:
+                        parts.append(f"{path}: {msg}".strip(": "))
+            if parts:
+                return "AmoCRM: " + "; ".join(parts[:3])
+
+    return f"AmoCRM вернул ошибку {status}"
+
+
 def get_deal_link(deal_id: str, company: str | None = None) -> str | None:
-    base_url = config.AMOCRM_BASE_URL or _get_amo_base_url(company)
+    base_url = config.AMOCRM_BASE_URL
+    if not base_url:
+        token = _get_amo_token(company)
+        payload = _decode_jwt_payload(token or "")
+        base_domain = payload.get("base_domain", config.AMOCRM_DOMAIN)
+        # Для ссылки в UI нужен аккаунт, не api-b
+        if config.AMOCRM_SUBDOMAIN:
+            base_url = f"https://{config.AMOCRM_SUBDOMAIN}.{base_domain}"
     if not base_url:
         return None
     return f"{base_url.rstrip('/')}/leads/detail/{deal_id}"
@@ -109,55 +171,71 @@ def get_deal_link(deal_id: str, company: str | None = None) -> str | None:
 _pipeline_status_cache: dict[str, int] = {}
 
 
+def _extract_statuses_from_pipeline(pipeline: dict) -> list:
+    statuses = pipeline.get("_embedded", {}).get("statuses", [])
+    if statuses:
+        return statuses
+    if isinstance(pipeline.get("statuses"), list):
+        return pipeline["statuses"]
+    return []
+
+
 async def _get_first_status_id(company: str, pipeline_id: int) -> int | None:
     cache_key = f"{company}:{pipeline_id}"
     if cache_key in _pipeline_status_cache:
         return _pipeline_status_cache[cache_key]
 
-    base_url = _get_amo_base_url(company)
+    api_url = _get_amo_api_url(company)
     token = _get_amo_token(company)
-    if not base_url or not token:
+    if not api_url or not token:
         return None
 
     headers = _amo_headers(token)
 
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=AMO_TIMEOUT) as session:
             statuses: list = []
-            url = f"{base_url}/api/v4/leads/pipelines/{pipeline_id}"
-            async with session.get(url, headers=headers, timeout=15) as response:
+
+            url = f"{api_url}/api/v4/leads/pipelines/{pipeline_id}"
+            async with session.get(url, headers=headers) as response:
                 if response.status == 200:
+                    pipeline = await response.json()
+                    statuses = _extract_statuses_from_pipeline(pipeline)
+
+            if not statuses:
+                list_url = f"{api_url}/api/v4/leads/pipelines"
+                async with session.get(list_url, headers=headers) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logging.error(
+                            f"Не удалось получить воронки: {response.status} {error_text}"
+                        )
+                        return None
                     data = await response.json()
-                    statuses = data.get("_embedded", {}).get("statuses", [])
-                    if not statuses and isinstance(data.get("statuses"), list):
-                        statuses = data["statuses"]
-                else:
-                    logging.warning(
-                        f"Не удалось получить воронку {pipeline_id} напрямую: {response.status}"
-                    )
-                    list_url = f"{base_url}/api/v4/leads/pipelines"
-                    async with session.get(list_url, headers=headers, timeout=15) as list_response:
-                        if list_response.status != 200:
-                            error_text = await list_response.text()
-                            logging.error(
-                                f"Не удалось получить список воронок: "
-                                f"{list_response.status} {error_text}"
-                            )
-                            return None
-                        data = await list_response.json()
-                        pipelines = data.get("_embedded", {}).get("pipelines", [])
-                        for pipeline in pipelines:
-                            if pipeline.get("id") == pipeline_id:
-                                statuses = pipeline.get("_embedded", {}).get("statuses", [])
-                                break
+                    pipelines = data.get("_embedded", {}).get("pipelines", [])
+                    for pipeline in pipelines:
+                        if pipeline.get("id") == pipeline_id:
+                            statuses = _extract_statuses_from_pipeline(pipeline)
+                            break
 
             if not statuses:
                 logging.error(f"У воронки {pipeline_id} не найдены этапы")
                 return None
 
-            first_status = min(statuses, key=lambda s: s.get("sort", 0))
+            # Исключаем этапы «Успешно»/«Закрыто» (type 142/143), берём первый рабочий
+            active_statuses = [
+                s for s in statuses if s.get("type") not in (142, 143)
+            ]
+            if not active_statuses:
+                active_statuses = statuses
+
+            first_status = min(active_statuses, key=lambda s: s.get("sort", 999999))
             status_id = first_status["id"]
             _pipeline_status_cache[cache_key] = status_id
+            logging.info(
+                f"Воронка {pipeline_id} ({_company_label(company)}): "
+                f"первый этап id={status_id}, name={first_status.get('name')}"
+            )
             return status_id
     except Exception as e:
         logging.error(f"Ошибка получения этапов воронки {pipeline_id}: {e}")
@@ -165,13 +243,16 @@ async def _get_first_status_id(company: str, pipeline_id: int) -> int | None:
 
 
 async def create_deal(name: str, company: str) -> tuple[str | None, str | None]:
-    """Создаёт сделку в AmoCRM. Возвращает (deal_id, error_message)."""
-    base_url = _get_amo_base_url(company)
+    """
+    POST /api/v4/leads — создаёт сделку по документации AmoCRM.
+    Возвращает (deal_id, error_message).
+    """
+    api_url = _get_amo_api_url(company)
     token = _get_amo_token(company)
     pipeline_id_raw = _get_expected_pipeline_id(company)
 
-    if not base_url or not token:
-        return None, "AmoCRM не настроен: проверь AMOCRM_BASE_URL и AMOCRM_ACCESS_TOKEN"
+    if not api_url or not token:
+        return None, "AmoCRM не настроен: проверь AMOCRM_ACCESS_TOKEN"
     if not pipeline_id_raw:
         return None, f"Не задан ID воронки для {_company_label(company)}"
 
@@ -181,29 +262,36 @@ async def create_deal(name: str, company: str) -> tuple[str | None, str | None]:
         return None, f"Некорректный ID воронки: {pipeline_id_raw}"
 
     status_id = await _get_first_status_id(company, pipeline_id)
+    if not status_id:
+        return None, f"Не удалось получить этапы воронки {pipeline_id}"
+
+    responsible_user_id = _get_user_id_from_token(token)
 
     lead_data: dict[str, Any] = {
         "name": name,
         "pipeline_id": pipeline_id,
-        "created_by": 0,
+        "status_id": status_id,
     }
-    if status_id:
-        lead_data["status_id"] = status_id
+    if responsible_user_id:
+        lead_data["responsible_user_id"] = responsible_user_id
 
-    url = f"{base_url}/api/v4/leads"
+    url = f"{api_url}/api/v4/leads"
     headers = _amo_headers(token)
     payload = [lead_data]
 
+    logging.info(
+        f"AmoCRM POST {url} | pipeline={pipeline_id} status={status_id} name={name!r}"
+    )
+
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, headers=headers, timeout=20) as response:
+        async with aiohttp.ClientSession(timeout=AMO_TIMEOUT) as session:
+            async with session.post(url, json=payload, headers=headers) as response:
                 response_text = await response.text()
 
                 if response.status not in (200, 201):
-                    logging.error(
-                        f"AmoCRM не создал сделку: {response.status} {response_text}"
-                    )
-                    return None, f"AmoCRM вернул ошибку {response.status}"
+                    error_msg = _parse_amo_error(response_text, response.status)
+                    logging.error(f"AmoCRM POST leads failed: {response.status} {response_text}")
+                    return None, error_msg
 
                 try:
                     data = json.loads(response_text) if response_text else {}
@@ -221,45 +309,46 @@ async def create_deal(name: str, company: str) -> tuple[str | None, str | None]:
                     f"Создана сделка #{deal_id} «{name}» в воронке {_company_label(company)}"
                 )
                 return deal_id, None
+
     except asyncio.TimeoutError:
         logging.error("Таймаут при создании сделки в AmoCRM")
-        return None, "Превышено время ожидания ответа AmoCRM"
+        return None, "Превышено время ожидания ответа AmoCRM (20 сек)"
+    except aiohttp.ClientError as e:
+        logging.error(f"Сетевая ошибка AmoCRM: {e}")
+        return None, "Ошибка сети при обращении к AmoCRM"
     except Exception as e:
         logging.error(f"Ошибка создания сделки в AmoCRM: {e}")
-        return None, "Ошибка сети при обращении к AmoCRM"
+        return None, f"Ошибка AmoCRM: {e}"
 
 
 async def get_deal_name(deal_id: str, company: str | None = None) -> str | None:
-    """Получает название сделки из AmoCRM по её ID."""
-    base_url = _get_amo_base_url(company)
+    """GET /api/v4/leads/{id} — получает название сделки."""
+    api_url = _get_amo_api_url(company)
     token = _get_amo_token(company)
 
-    if not base_url or not token:
-        logging.error(
-            "AmoCRM не настроен: укажите AMOCRM_BASE_URL и AMOCRM_ACCESS_TOKEN в .env"
-        )
+    if not api_url or not token:
+        logging.error("AmoCRM не настроен")
         return None
 
-    url = f"{base_url}/api/v4/leads/{deal_id}"
+    url = f"{api_url}/api/v4/leads/{deal_id}"
     headers = {"Authorization": f"Bearer {token}"}
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=15) as response:
+        async with aiohttp.ClientSession(timeout=AMO_TIMEOUT) as session:
+            async with session.get(url, headers=headers) as response:
                 if response.status == 404:
-                    logging.warning(f"Сделка {deal_id} не найдена в AmoCRM ({base_url})")
+                    logging.warning(f"Сделка {deal_id} не найдена в AmoCRM")
                     return None
                 if response.status != 200:
                     error_text = await response.text()
                     logging.error(
-                        f"AmoCRM вернул {response.status} для сделки {deal_id}: {error_text}"
+                        f"AmoCRM GET lead {deal_id}: {response.status} {error_text}"
                     )
                     return None
 
                 data = await response.json()
                 name = data.get("name")
                 if not name:
-                    logging.warning(f"Сделка {deal_id} найдена, но название пустое")
                     return None
 
                 expected_pipeline = _get_expected_pipeline_id(company)
@@ -268,7 +357,7 @@ async def get_deal_name(deal_id: str, company: str | None = None) -> str | None:
                     if deal_pipeline and deal_pipeline != str(expected_pipeline):
                         logging.warning(
                             f"Сделка {deal_id} из воронки {deal_pipeline}, "
-                            f"ожидалась {expected_pipeline} для {_company_label(company)}"
+                            f"ожидалась {expected_pipeline}"
                         )
                         return None
 
