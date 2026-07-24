@@ -461,8 +461,22 @@ async def _get_first_status_id(company: str, pipeline_id: int) -> tuple[int | No
             f"<code>AMOCRM_STATUS_ID_{'BLASTER' if company == 'blaster' else 'CULT'}=...</code>"
         )
 
-    active_statuses = [s for s in statuses if s.get("type") not in (142, 143)]
+    logging.info(
+        f"Воронка {pipeline_id} ({_company_label(company)}), все этапы: "
+        + "; ".join(f"{s.get('id')}={s.get('name')}" for s in statuses)
+    )
+
+    # id 142/143 — стандартные across-account статусы "Успешно/Закрыто не реализовано".
+    # is_editable=False — системные этапы (в т.ч. "Неразобранное"), в них нельзя
+    # создать сделку через обычный POST /leads — AmoCRM вернёт "not a valid choice".
+    active_statuses = [
+        s for s in statuses
+        if s.get("id") not in (142, 143) and s.get("is_editable", True) is not False
+    ]
     if not active_statuses:
+        logging.warning(
+            f"Воронка {pipeline_id}: не нашлось редактируемых этапов, беру любой (может быть ошибка)."
+        )
         active_statuses = statuses
 
     first_status = min(active_statuses, key=lambda s: s.get("sort", 999999))
