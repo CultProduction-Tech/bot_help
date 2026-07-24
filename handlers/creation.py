@@ -77,13 +77,14 @@ def format_confirmation_text(
     )
     if deal_id:
         text += f"<b>Сделка AmoCRM:</b> #{deal_id}\n"
-    elif create_amo:
-        text += "<b>AmoCRM:</b> будет создана новая сделка\n"
-    text += f"<b>Имя папки:</b> {folder_name}\n\n"
-    text += (
-        "<i>Будут созданы: Google Drive → "
-        f"{'СнупДок' if company == 'blaster' else 'Нори'} → ЦУП</i>"
-    )
+    text += f"<b>Имя проекта:</b> {folder_name}\n\n"
+
+    if create_amo:
+        chain = "AmoCRM → Google Drive → СнупДок → СУП"
+    else:
+        chain = "Google Drive → СнупДок → СУП"
+
+    text += f"<i>Будут созданы: {chain}</i>"
     return text
 
 
@@ -181,11 +182,11 @@ async def execute_folder_creation(
             deal_id=deal_id,
         )
 
-        internal_system_name = "СнупДок" if company == "blaster" else "Нори"
+        internal_system_name = "СнупДок"
 
         links_text = f"• <a href='{main_folder_link}'>Google Диск</a>\n"
         if cup_project_link:
-            links_text += f"• <a href='{cup_project_link}'>Проект в ЦУП</a>\n"
+            links_text += f"• <a href='{cup_project_link}'>Проект в СУП</a>\n"
         if internal_project_link:
             links_text += f"• <a href='{internal_project_link}'>Проект в {internal_system_name}</a>\n"
         if deal_id:
@@ -198,14 +199,14 @@ async def execute_folder_creation(
         if not project_uuid and webhook_url:
             warnings.append(f"не удалось зарегистрировать проект в {internal_system_name}")
         if not cup_project_link and config.WEBHOOK_URL_CUP:
-            warnings.append("не удалось зарегистрировать проект в ЦУП")
+            warnings.append("не удалось зарегистрировать проект в СУП")
 
-        warning_text = f"\n\n⚠️ <i>Папки созданы, но: {', '.join(warnings)}.</i>" if warnings else ""
+        warning_text = f"\n\n⚠️ <i>Проект частично создан, но: {', '.join(warnings)}.</i>" if warnings else ""
         deal_text = f"\n<b>Сделка AmoCRM:</b> #{deal_id}" if deal_id else ""
 
         await status_message.edit_text(
             f"<b>✅ Проект создан — {format_company_name(company)}</b>\n\n"
-            f"<b>Папка:</b> {folder_name}{deal_text}\n\n"
+            f"<b>Имя проекта:</b> {folder_name}{deal_text}\n\n"
             f"🔗 <b>Ссылки:</b>\n{links_text}{warning_text}",
             parse_mode="HTML",
             disable_web_page_preview=True,
@@ -329,7 +330,7 @@ async def handle_user_request(message: types.Message, state: FSMContext, bot: Bo
         scenario = "с нуля (новая сделка в Amo)" if create_amo else f"по сделке #{deal_id}"
         await message.answer(
             f"Создание <b>{scenario}</b>:\n"
-            f"Папка <b>«{folder_name}»</b>\n\n"
+            f"Проект <b>«{folder_name}»</b>\n\n"
             "Выбери компанию:",
             reply_markup=builder.as_markup(),
             parse_mode="HTML",

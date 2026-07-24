@@ -98,10 +98,10 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
     companies_hint = ", ".join(format_company_name(c) for c in allowed)
     await message.answer(
-        "<b>Привет!</b> Я помогаю создавать проекты и папки.\n\n"
+        "<b>Привет!</b> Я помогу создать единую систему папок и проектов.\n\n"
         f"<b>Доступные компании:</b> {companies_hint}\n\n"
         "Выбери сценарий кнопкой ниже или просто отправь ID сделки / название проекта.\n\n"
-        "ℹ️ Нажми <b>❓ Помощь</b>, чтобы увидеть все команды.",
+        "Нажми кнопку <b>❓ Помощь</b>, чтобы увидеть все команды.",
         parse_mode="HTML",
         reply_markup=get_main_keyboard(),
     )
