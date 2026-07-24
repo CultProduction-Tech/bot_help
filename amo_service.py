@@ -170,9 +170,6 @@ def _parse_amo_error(response_text: str, status: int) -> str:
         return f"AmoCRM вернул ошибку {status}"
 
     if isinstance(data, dict):
-        detail = data.get("detail") or data.get("title") or data.get("hint")
-        if detail:
-            return str(detail)
         validation_errors = data.get("validation-errors")
         if validation_errors:
             parts = []
@@ -184,6 +181,10 @@ def _parse_amo_error(response_text: str, status: int) -> str:
                         parts.append(f"{path}: {msg}".strip(": "))
             if parts:
                 return "; ".join(parts[:3])
+
+        detail = data.get("detail") or data.get("title") or data.get("hint")
+        if detail:
+            return str(detail)
     return f"ошибка {status}"
 
 
@@ -327,7 +328,9 @@ async def _amo_get_path(
                     logging.error(f"AmoCRM 401 GET {url}: {detail}")
                     return None, None, detail
                 if response.status != 200:
-                    return None, None, _parse_amo_error(text, response.status)
+                    detail = _parse_amo_error(text, response.status)
+                    logging.error(f"AmoCRM {response.status} GET {url}: {detail}\nRAW: {text[:800]}")
+                    return None, None, detail
                 return json.loads(text) if text else {}, api_base, None
     except Exception as e:
         logging.error(f"AmoCRM GET {url}: {e}")
@@ -349,7 +352,9 @@ async def _amo_post_path(
                     logging.error(f"AmoCRM 401 POST {url}: {detail}")
                     return None, None, detail
                 if response.status not in (200, 201):
-                    return None, None, _parse_amo_error(text, response.status)
+                    detail = _parse_amo_error(text, response.status)
+                    logging.error(f"AmoCRM {response.status} POST {url}: {detail}\nRAW: {text[:800]}")
+                    return None, None, detail
                 return json.loads(text) if text else {}, api_base, None
     except Exception as e:
         logging.error(f"AmoCRM POST {url}: {e}")
