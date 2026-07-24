@@ -21,16 +21,6 @@ def get_company_keyboard(prefix: str = "company") -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="Бластер", callback_data=f"{prefix}:blaster")
     builder.button(text="Культ", callback_data=f"{prefix}:cult")
-    builder.button(text="◀️ Назад", callback_data="nav:back")
-    builder.button(text="❌ Отмена", callback_data="nav:cancel")
-    builder.adjust(2, 2)
-    return builder.as_markup()
-
-
-def get_input_keyboard() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.button(text="◀️ Назад", callback_data="nav:back")
-    builder.button(text="❌ Отмена", callback_data="nav:cancel")
     builder.adjust(2)
     return builder.as_markup()
 

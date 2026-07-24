@@ -12,7 +12,6 @@ from keyboards import (
     get_help_text,
     get_main_keyboard,
     get_company_keyboard,
-    get_input_keyboard,
 )
 from states import FolderCreation
 
@@ -92,7 +91,6 @@ async def _start_mode(message: types.Message, state: FSMContext, mode: str):
             parse_mode="HTML",
             reply_markup=get_main_keyboard(),
         )
-        await message.answer("Можно вернуться назад или отменить:", reply_markup=get_input_keyboard())
         await state.set_state(FolderCreation.editing_name)
         return
 

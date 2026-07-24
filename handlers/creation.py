@@ -12,7 +12,8 @@ from states import FolderCreation
 from ai_service import analyze_user_intent, transcribe_voice
 from amo_service import extract_deal_id, get_deal_name, create_deal, get_deal_link
 from aiogram.filters import StateFilter
-from keyboards import get_main_keyboard, get_company_keyboard, get_input_keyboard
+from keyboards import get_main_keyboard, get_company_keyboard
+from keyboards import BTN_BY_AMO_ID, BTN_FROM_SCRATCH, BTN_HELP, BTN_CANCEL
 
 router = Router()
 
@@ -305,7 +306,6 @@ async def _prompt_after_company(callback: types.CallbackQuery, state: FSMContext
         await callback.message.edit_text(text, parse_mode="HTML")
     except TelegramBadRequest:
         await callback.message.answer(text, parse_mode="HTML")
-    await callback.message.answer("Можно вернуться назад или отменить:", reply_markup=get_input_keyboard())
     await state.update_data(pending_company=company)
     await state.set_state(FolderCreation.editing_name)
 
@@ -351,16 +351,18 @@ async def handle_user_request(message: types.Message, state: FSMContext, bot: Bo
             return
     else:
         intent = await analyze_user_intent(user_text, allowed)
-        folder_name = intent.get("folder_name")
         company = intent.get("company")
+        folder_name = intent.get("folder_name") or user_text.strip()
         deal_id = None
         create_amo = True
 
         if not folder_name:
             await message.answer(
-                "🤖 Не понял название проекта.\n\n"
-                "Отправь название, ID сделки Amo или выбери сценарий кнопкой ниже.",
+                "Выбери сценарий кнопкой ниже:\n"
+                "📋 <b>По ID сделки Amo</b> — если сделка уже есть\n"
+                "📋 <b>Создать с нуля</b> — новый проект с созданием сделки в Amo",
                 reply_markup=get_main_keyboard(),
+                parse_mode="HTML",
             )
             return
 
@@ -375,19 +377,11 @@ async def handle_user_request(message: types.Message, state: FSMContext, bot: Bo
             pending_create_amo=create_amo,
             creation_mode="from_scratch" if create_amo else "by_amo_id",
         )
-        builder = InlineKeyboardBuilder()
-        builder.button(text="Бластер", callback_data="ai_company:blaster")
-        builder.button(text="Культ", callback_data="ai_company:cult")
-        builder.button(text="◀️ Назад", callback_data="nav:back")
-        builder.button(text="❌ Отмена", callback_data="nav:cancel")
-        builder.adjust(2, 2)
-
-        scenario = "с нуля (новая сделка в Amo)" if create_amo else f"по сделке #{deal_id}"
         await message.answer(
-            f"Создание <b>{scenario}</b>:\n"
+            f"Создание <b>{'с нуля' if create_amo else f'по сделке #{deal_id}'}</b>:\n"
             f"Проект <b>«{folder_name}»</b>\n\n"
             "Выбери компанию:",
-            reply_markup=builder.as_markup(),
+            reply_markup=get_company_keyboard("ai_company"),
             parse_mode="HTML",
         )
         await state.set_state(FolderCreation.choosing_company)
@@ -431,7 +425,6 @@ async def process_confirmation(callback: types.CallbackQuery, state: FSMContext)
         await callback.message.edit_text(
             "✏️ Отправь новое название или ID сделки Amo:",
         )
-        await callback.message.answer("Можно вернуться назад или отменить:", reply_markup=get_input_keyboard())
         await state.set_state(FolderCreation.editing_name)
     elif action == "cancel":
         await callback.message.edit_text("❌ Создание отменено.")
