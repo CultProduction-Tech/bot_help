@@ -32,6 +32,14 @@ TELEGRAM_FOLDER_WEBHOOK_SECRET = os.getenv("TELEGRAM_FOLDER_WEBHOOK_SECRET")
 WEBHOOK_URL_CUP = os.getenv("WEBHOOK_URL_CUP")
 TELEGRAM_CUP_SECRET = os.getenv("TELEGRAM_CUP_SECRET")
 
+# Входящие уведомления от ЦУП (relay ЦУП → бот → Telegram).
+# Секрет по умолчанию тот же, что используется для исходящих вебхуков в ЦУП,
+# но можно задать отдельно через WEBHOOK_SECRET_TELEGRAM_BOT.
+WEBHOOK_SECRET_TELEGRAM_BOT = _clean_token(os.getenv("WEBHOOK_SECRET_TELEGRAM_BOT")) or TELEGRAM_CUP_SECRET
+TELEGRAM_NOTIFY_CHAT_ID = os.getenv("TELEGRAM_NOTIFY_CHAT_ID", "").strip()
+HTTP_SERVER_HOST = os.getenv("HTTP_SERVER_HOST", "0.0.0.0").strip()
+HTTP_SERVER_PORT = int(os.getenv("HTTP_SERVER_PORT", "8080") or "8080")
+
 # AmoCRM
 AMOCRM_BASE_URL = os.getenv("AMOCRM_BASE_URL", "").strip().rstrip("/")
 AMOCRM_API_DOMAIN = os.getenv("AMOCRM_API_DOMAIN", "").strip()
