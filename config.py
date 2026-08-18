@@ -64,6 +64,14 @@ AMOCRM_PIPELINE_ID_BLASTER = (
 AMOCRM_STATUS_ID_CULT = os.getenv("AMOCRM_STATUS_ID_CULT", "").strip()
 AMOCRM_STATUS_ID_BLASTER = os.getenv("AMOCRM_STATUS_ID_BLASTER", "").strip()
 
+# Ответственный за сделку при создании (Amo user id)
+AMOCRM_RESPONSIBLE_USER_ID_CULT = os.getenv("AMOCRM_RESPONSIBLE_USER_ID_CULT", "").strip()
+AMOCRM_RESPONSIBLE_USER_ID_BLASTER = os.getenv("AMOCRM_RESPONSIBLE_USER_ID_BLASTER", "").strip()
+
+# Кастомное поле «Папка проекта» в сделке AmoCRM (field id)
+AMOCRM_FOLDER_FIELD_ID_CULT = os.getenv("AMOCRM_FOLDER_FIELD_ID_CULT", "").strip()
+AMOCRM_FOLDER_FIELD_ID_BLASTER = os.getenv("AMOCRM_FOLDER_FIELD_ID_BLASTER", "").strip()
+
 # Проверка на наличие критически важных переменных
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN missing in .env file!")

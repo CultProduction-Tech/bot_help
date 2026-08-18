@@ -10,10 +10,16 @@ import aiohttp
 import config
 
 DEAL_ID_PATTERN = re.compile(
-    r"(?:сделк[аиуё]|deal|lead|лид|id|amo|амо|#)[^\d]*(\d+)|"
-    r"(?:создай|сделай|папк[ау])[^\d]*(\d+)",
+    r"(?:"
+    r"сделк[аиуё]|deal|lead|лид|"
+    r"(?:^|\s)(?:id|amo|амо)(?:\s|:|#)|"
+    r"#"
+    r")[^\d]*(\d{5,})|"
+    r"(?:создай|сделай|папк[ау])[^\d]*(\d{5,})",
     re.IGNORECASE,
 )
+
+MIN_DEAL_ID_LEN = 5
 
 AMO_TIMEOUT = aiohttp.ClientTimeout(total=20, connect=10)
 AMO_AUTH_HINT = (
@@ -75,7 +81,7 @@ def extract_deal_id(text: str) -> str | None:
     text = text.strip()
     if not text:
         return None
-    if re.fullmatch(r"\d+", text):
+    if re.fullmatch(rf"\d{{{MIN_DEAL_ID_LEN},}}", text):
         return text
     match = DEAL_ID_PATTERN.search(text)
     if match:
@@ -140,6 +146,102 @@ def _get_configured_status_id(company: str | None) -> int | None:
         return int(raw)
     except ValueError:
         return None
+
+
+def _get_configured_responsible_user_id(company: str | None) -> int | None:
+    raw = None
+    if company == "blaster":
+        raw = config.AMOCRM_RESPONSIBLE_USER_ID_BLASTER
+    elif company == "cult":
+        raw = config.AMOCRM_RESPONSIBLE_USER_ID_CULT
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _get_configured_folder_field_id(company: str | None) -> int | None:
+    raw = None
+    if company == "blaster":
+        raw = config.AMOCRM_FOLDER_FIELD_ID_BLASTER
+    elif company == "cult":
+        raw = config.AMOCRM_FOLDER_FIELD_ID_CULT
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+_resolved_responsible_user_cache: dict[str, int] = {}
+_resolved_folder_field_cache: dict[str, int] = {}
+
+
+async def _resolve_user_id_by_name(company: str, *name_parts: str) -> int | None:
+    data, _, _ = await _amo_get(company, "/api/v4/users")
+    if not data:
+        return None
+    for user in data.get("_embedded", {}).get("users", []):
+        name = (user.get("name") or "").lower()
+        if all(part.lower() in name for part in name_parts):
+            user_id = user.get("id")
+            if user_id:
+                logging.info(f"AmoCRM: найден пользователь {user.get('name')} id={user_id}")
+                return int(user_id)
+    return None
+
+
+async def _resolve_folder_field_id(company: str) -> int | None:
+    data, _, _ = await _amo_get(company, "/api/v4/leads/custom_fields")
+    if not data:
+        return None
+    for field in data.get("_embedded", {}).get("custom_fields", []):
+        name = (field.get("name") or "").lower()
+        if "папк" in name and "проект" in name:
+            field_id = field.get("id")
+            if field_id:
+                logging.info(f"AmoCRM: поле «{field.get('name')}» id={field_id}")
+                return int(field_id)
+    return None
+
+
+async def _get_responsible_user_id(company: str, token: str | None) -> int | None:
+    configured = _get_configured_responsible_user_id(company)
+    if configured:
+        return configured
+
+    if company in _resolved_responsible_user_cache:
+        return _resolved_responsible_user_cache[company]
+
+    if company == "cult":
+        resolved = await _resolve_user_id_by_name(company, "денис", "леваков")
+        if resolved:
+            _resolved_responsible_user_cache[company] = resolved
+            return resolved
+
+    token_user = _get_user_id_from_token(token)
+    return token_user
+
+
+async def _get_folder_field_id(company: str) -> int | None:
+    configured = _get_configured_folder_field_id(company)
+    if configured:
+        return configured
+
+    if company in _resolved_folder_field_cache:
+        return _resolved_folder_field_cache[company]
+
+    resolved = await _resolve_folder_field_id(company)
+    if resolved:
+        _resolved_folder_field_cache[company] = resolved
+    return resolved
+
+
+def _folder_link_custom_fields(field_id: int, folder_link: str) -> list[dict]:
+    return [{"field_id": field_id, "values": [{"value": folder_link}]}]
 
 
 def _company_label(company: str) -> str:
@@ -425,6 +527,62 @@ async def _amo_post(company: str, path: str, payload: Any) -> tuple[Any | None, 
     return None, None, _format_user_amo_error(last_error)
 
 
+async def _amo_patch_path(
+    api_base: str, token: str, path: str, payload: Any
+) -> tuple[Any | None, str | None, str | None]:
+    headers = _amo_headers(token)
+    url = f"{api_base.rstrip('/')}{path}"
+
+    try:
+        async with aiohttp.ClientSession(timeout=AMO_TIMEOUT) as session:
+            async with session.patch(url, json=payload, headers=headers) as response:
+                text = await response.text()
+                if response.status == 401:
+                    detail = _parse_amo_error(text, 401)
+                    logging.error(f"AmoCRM 401 PATCH {url}: {detail}")
+                    return None, None, detail
+                if response.status not in (200, 201):
+                    detail = _parse_amo_error(text, response.status)
+                    logging.error(f"AmoCRM {response.status} PATCH {url}: {detail}\nRAW: {text[:800]}")
+                    return None, None, detail
+                return json.loads(text) if text else {}, api_base, None
+    except Exception as e:
+        logging.error(f"AmoCRM PATCH {url}: {e}")
+        return None, None, str(e)
+
+
+async def _amo_patch(company: str, path: str, payload: Any) -> tuple[Any | None, str | None, str | None]:
+    global _resolved_api_base
+
+    token = _get_amo_token(company)
+    if not token:
+        return None, None, "AmoCRM токен не настроен"
+
+    fmt_error = _validate_token_format(token)
+    if fmt_error:
+        return None, None, fmt_error
+
+    bases: list[str] = []
+    if _resolved_api_base:
+        bases.append(_resolved_api_base)
+    for base in _collect_api_bases(token):
+        if base not in bases:
+            bases.append(base)
+
+    last_error: str | None = None
+    for api_base in bases:
+        data, _, error = await _amo_patch_path(api_base, token, path, payload)
+        if not error:
+            _resolved_api_base = api_base
+            return data, api_base, None
+        last_error = error
+        if not _is_auth_error(error):
+            return None, None, error
+        logging.warning(f"AmoCRM 401 PATCH {api_base}{path}, пробую другой домен...")
+
+    return None, None, _format_user_amo_error(last_error)
+
+
 async def _get_first_status_id(company: str, pipeline_id: int) -> tuple[int | None, str | None]:
     configured = _get_configured_status_id(company)
     if configured:
@@ -489,7 +647,9 @@ async def _get_first_status_id(company: str, pipeline_id: int) -> tuple[int | No
     return status_id, None
 
 
-async def create_deal(name: str, company: str) -> tuple[str | None, str | None]:
+async def create_deal(
+    name: str, company: str, folder_link: str | None = None
+) -> tuple[str | None, str | None]:
     pipeline_id_raw = _get_expected_pipeline_id(company)
     if not pipeline_id_raw:
         return None, f"Не задан ID воронки для {_company_label(company)}"
@@ -507,7 +667,7 @@ async def create_deal(name: str, company: str) -> tuple[str | None, str | None]:
         )
 
     token = _get_amo_token(company)
-    responsible_user_id = _get_user_id_from_token(token)
+    responsible_user_id = await _get_responsible_user_id(company, token)
 
     lead_data: dict[str, Any] = {
         "name": name,
@@ -517,8 +677,16 @@ async def create_deal(name: str, company: str) -> tuple[str | None, str | None]:
     if responsible_user_id:
         lead_data["responsible_user_id"] = responsible_user_id
 
+    if folder_link:
+        field_id = await _get_folder_field_id(company)
+        if field_id:
+            lead_data["custom_fields_values"] = _folder_link_custom_fields(field_id, folder_link)
+        else:
+            logging.warning(f"AmoCRM: поле «Папка проекта» не найдено для {_company_label(company)}")
+
     logging.info(
-        f"AmoCRM POST /leads: pipeline={pipeline_id} status={status_id} name={name!r}"
+        f"AmoCRM POST /leads: pipeline={pipeline_id} status={status_id} "
+        f"responsible={responsible_user_id} name={name!r}"
     )
 
     try:
@@ -539,6 +707,26 @@ async def create_deal(name: str, company: str) -> tuple[str | None, str | None]:
     except Exception as e:
         logging.error(f"Ошибка создания сделки: {e}")
         return None, f"Ошибка AmoCRM: {e}"
+
+
+async def update_deal_folder_link(
+    deal_id: str, company: str, folder_link: str
+) -> str | None:
+    field_id = await _get_folder_field_id(company)
+    if not field_id:
+        logging.warning(f"AmoCRM: поле «Папка проекта» не найдено для {_company_label(company)}")
+        return None
+
+    payload = {
+        "custom_fields_values": _folder_link_custom_fields(field_id, folder_link),
+    }
+    _, _, error = await _amo_patch(company, f"/api/v4/leads/{deal_id}", payload)
+    if error:
+        logging.error(f"AmoCRM: не удалось обновить ссылку на папку в сделке {deal_id}: {error}")
+        return error
+
+    logging.info(f"AmoCRM: ссылка на папку добавлена в сделку #{deal_id}")
+    return None
 
 
 async def get_deal_name(deal_id: str, company: str | None = None) -> str | None:

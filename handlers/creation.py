@@ -10,7 +10,7 @@ from drive_service import get_drive_service, create_drive_folder, create_folders
 import config
 from states import FolderCreation
 from ai_service import analyze_user_intent, transcribe_voice
-from amo_service import extract_deal_id, get_deal_name, create_deal, get_deal_link
+from amo_service import extract_deal_id, get_deal_name, create_deal, get_deal_link, update_deal_folder_link
 from aiogram.filters import StateFilter
 from keyboards import get_main_keyboard, get_company_keyboard
 from keyboards import BTN_BY_AMO_ID, BTN_FROM_SCRATCH, BTN_HELP, BTN_CANCEL
@@ -18,15 +18,15 @@ from keyboards import BTN_BY_AMO_ID, BTN_FROM_SCRATCH, BTN_HELP, BTN_CANCEL
 router = Router()
 
 CULT_STRUCTURE = {
-    "1 - Presale": ["Brief", "Creative"],
+    "1 - Presale": ["Brief", "Creative", "Directors_tender"],
     "2 - Project": [
-        "00 - Brief", "01 - Script", "03 - Casting", "04 - Wardrobe",
-        "05 - Locations", "06 - Props", "07 - Edit", "12 - pre-PPM-PPM",
-        "13 - Timing", "15 - Administration", "16 - PR", "17 - Safety"
+        "00 - Brief", "01 - Script","02 - Treatment", "03 - Casting", "04 - Wardrobe",
+        "05 - Locations", "06 - Props", "07 - Edit", "08 - CG", "09 - Color", "10 - Sound", "11 - Music", "12 - pre-PPM-PPM",
+        "13 - Timing", "14 - Shooting plan - callsheet", "15 - Administration", "16 - PR", "17 - Safety"
     ],
     "3 - Documents": {
         "Docs": ["Client", "Team"],
-        "Money": ["CE"]
+        "Money": ["CE", "Cash_flow"]
     }
 }
 
@@ -161,28 +161,6 @@ async def execute_folder_creation(
     )
 
     try:
-        if create_amo and not deal_id:
-            status_message = await _update_status(
-                status_message, chat_id, bot, "⏳ Создаю сделку в AmoCRM..."
-            )
-            try:
-                deal_id, amo_error = await asyncio.wait_for(
-                    create_deal(folder_name, company),
-                    timeout=25,
-                )
-            except asyncio.TimeoutError:
-                deal_id, amo_error = None, "Превышено время ожидания AmoCRM (25 сек)"
-
-            if amo_error or not deal_id:
-                await _update_status(
-                    status_message,
-                    chat_id,
-                    bot,
-                    f"❌ Не удалось создать сделку в AmoCRM.\n\n{amo_error or 'Неизвестная ошибка'}",
-                    parse_mode="HTML",
-                )
-                return
-
         status_message = await _update_status(
             status_message, chat_id, bot, "⏳ Создаю структуру папок на Google Drive..."
         )
@@ -197,6 +175,30 @@ async def execute_folder_creation(
         main_folder_link = main_folder.get("webViewLink")
 
         await asyncio.to_thread(create_folders_recursive, service, structure, main_folder_id)
+
+        if create_amo and not deal_id:
+            status_message = await _update_status(
+                status_message, chat_id, bot, "⏳ Создаю сделку в AmoCRM..."
+            )
+            try:
+                deal_id, amo_error = await asyncio.wait_for(
+                    create_deal(folder_name, company, main_folder_link),
+                    timeout=25,
+                )
+            except asyncio.TimeoutError:
+                deal_id, amo_error = None, "Превышено время ожидания AmoCRM (25 сек)"
+
+            if amo_error or not deal_id:
+                await _update_status(
+                    status_message,
+                    chat_id,
+                    bot,
+                    f"❌ Папки созданы, но сделку в AmoCRM создать не удалось.\n\n{amo_error or 'Неизвестная ошибка'}",
+                    parse_mode="HTML",
+                )
+                return
+        elif deal_id and main_folder_link:
+            await update_deal_folder_link(deal_id, company, main_folder_link)
 
         status_message = await _update_status(
             status_message, chat_id, bot, "⏳ Регистрирую проект в системах..."
@@ -351,7 +353,7 @@ async def handle_user_request(message: types.Message, state: FSMContext, bot: Bo
     else:
         intent = await analyze_user_intent(user_text, allowed)
         company = intent.get("company")
-        folder_name = intent.get("folder_name") or user_text.strip()
+        folder_name = user_text.strip()
         deal_id = None
         create_amo = True
 
