@@ -6,7 +6,14 @@ from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest
 from pydantic import ValidationError
-from drive_service import get_drive_service, create_drive_folder, create_folders_recursive, send_webhook, send_cup_webhook
+from drive_service import (
+    get_drive_service,
+    create_drive_folder,
+    create_folders_recursive,
+    seed_cult_templates,
+    send_webhook,
+    send_cup_webhook,
+)
 import config
 from states import FolderCreation
 from ai_service import analyze_user_intent, transcribe_voice
@@ -20,9 +27,15 @@ router = Router()
 CULT_STRUCTURE = {
     "1 - Presale": ["Brief", "Creative", "Directors_tender"],
     "2 - Project": [
-        "00 - Brief", "01 - Script","02 - Treatment", "03 - Casting", "04 - Wardrobe",
-        "05 - Locations", "06 - Props", "07 - Edit", "08 - CG", "09 - Color", "10 - Sound", "11 - Music", "12 - pre-PPM-PPM",
-        "13 - Timing", "14 - Shooting plan - callsheet", "15 - Administration", "16 - PR", "17 - Safety"
+        "00 - Brief", "01 - Script", "02 - Treatment", "03 - Casting", "04 - Wardrobe",
+        "05 - Locations", "06 - Props",
+        {"07 - Edit": ["MASTERS", {"TT": ["ЭФИРНАЯ РАМКА"]}]},
+        "08 - CG", "09 - Color",
+        {"10 - Sound": ["sound-design", "voice-over"]},
+        "11 - Music", "12 - pre-PPM-PPM",
+        "13 - Timing", "14 - Shooting plan - callsheet", "15 - Administration",
+        {"16 - PR": ["backup", "masters"]},
+        "17 - Safety",
     ],
     "3 - Documents": {
         "Docs": ["Client", "Team"],
@@ -175,6 +188,8 @@ async def execute_folder_creation(
         main_folder_link = main_folder.get("webViewLink")
 
         await asyncio.to_thread(create_folders_recursive, service, structure, main_folder_id)
+        if company == "cult":
+            await asyncio.to_thread(seed_cult_templates, service, main_folder_id, folder_name)
 
         if create_amo and not deal_id:
             status_message = await _update_status(
